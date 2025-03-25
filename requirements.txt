@@ -1,0 +1,8 @@
+# sudo apt update
+# sudo apt install python3-dev build-essential gcc
+# sudo apt install gcc-aarch64-linux-gnu
+RPi.GPIO
+pygame
+numpy
+scipy
+gpiozero
