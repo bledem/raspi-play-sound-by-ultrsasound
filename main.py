@@ -1,5 +1,5 @@
 import os
-import sys
+
 import RPi.GPIO as GPIO
 import time
 import pygame
@@ -18,7 +18,7 @@ logging.basicConfig(
 )
 
 
-# GPIO Setup
+# GPIO Setup, use the same pin as in your rasp board.
 TRIG_PIN = 27  # GPIO Pin for Trigger
 ECHO_PIN = 17  # GPIO Pin for Echo
 
