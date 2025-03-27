@@ -8,6 +8,7 @@ import random
 import logging
 import datetime
 from scipy.signal import butter, filtfilt
+from collections import deque
 
 # Set up logging to stdout only
 logging.basicConfig(
@@ -16,22 +17,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 
-# Still create log directory for CSV output
-log_directory = "./logs"
-if not os.path.exists(log_directory):
-    os.makedirs(log_directory)
-log_filename = os.path.join(
-    log_directory, f"sensor_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-)
-
-# Log header for CSV format
-with open(log_filename, "w") as f:
-    f.write("timestamp,raw_distance_cm,filtered_distance_cm,person_detected\n")
-
-# Check for root privileges
-if os.geteuid() != 0:
-    print("This script must be run as root. Please use 'sudo' to run it.")
-    sys.exit(1)
 
 # GPIO Setup
 TRIG_PIN = 27  # GPIO Pin for Trigger
@@ -134,12 +119,23 @@ except pygame.error as e:
 
 
 # Low-Pass Filter Function
-def low_pass_filter(data, cutoff=2.0, fs=10.0, order=3):
+def low_pass_filter(data, cutoff=1.0, fs=10.0, order=2):
     """Applies a Butterworth low-pass filter to smooth distance readings."""
+    # Convert deque to numpy array
+    data_array = np.array(data)
+
+    # Simple moving average if data is too short for filtfilt
+    if len(data_array) < 15:  # Ensure we have enough data points
+        return np.array([np.mean(data_array)])
+
     nyquist = 0.5 * fs
     normal_cutoff = cutoff / nyquist
     b, a = butter(order, normal_cutoff, btype="low", analog=False)
-    return filtfilt(b, a, data)
+    try:
+        return filtfilt(b, a, data_array)
+    except ValueError:
+        # Fallback to moving average if filtfilt fails
+        return np.array([np.mean(data_array)])
 
 
 # Function to measure distance from HC-SR04
@@ -175,26 +171,27 @@ def stop_music():
 
 # Main loop
 try:
-    history = np.full(5, 200.0)  # Initialize with high values (no person)
+    # Use a deque with max size of 30 for the history
+    history = deque([200.0] * 30, maxlen=30)  # Initialize with high values (no person)
     person_detected = False
     detection_start = None
+    need_rearm = False  # Flag to track if we need to wait for person to leave before playing again
 
     while True:
         raw_distance = get_distance()
-        history = np.roll(history, -1)
-        history[-1] = raw_distance
-        filtered_distance = raw_distance  # low_pass_filter(history)[-1]
+        # Add to the deque (which automatically handles removing old elements)
+        history.append(raw_distance)
 
-        # Log the distance readings to file
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        with open(log_filename, "a") as f:
-            f.write(
-                f"{timestamp},{raw_distance:.2f},{filtered_distance:.2f},{1 if person_detected else 0}\n"
-            )
+        # Try to apply filter, fall back to simple average if it fails
+        try:
+            filtered_distance = low_pass_filter(history)[-1]
+        except Exception as e:
+            logging.warning(f"Filter error: {e}, using raw value")
+            filtered_distance = raw_distance  # Use raw value if filtering fails
 
         # For stdout logging, use the logging module
         logging.info(
-            f"Distance: {raw_distance:.2f} cm, Filtered: {filtered_distance:.2f} cm"
+            f"Distance: {raw_distance:.2f} cm, Filtered: {filtered_distance:.2f} cm, Need Rearm: {need_rearm}"
         )
 
         if filtered_distance < 100:  # Person detected within 1 meter
@@ -202,15 +199,19 @@ try:
                 detection_start = time.time()
                 person_detected = True
             elif time.time() - detection_start > 0.5:  # Ensure presence for 0.5s
-                play_random_song()
+                if not need_rearm:  # Only play if we don't need to rearm
+                    play_random_song()
+                    need_rearm = (
+                        True  # Set flag to prevent playing again until person leaves
+                    )
         else:
             person_detected = False
             stop_music()
+            need_rearm = False  # Reset the rearm flag when person is no longer detected
 
         time.sleep(0.1)  # Small delay for smoother operation
 
 except KeyboardInterrupt:
     print("Exiting program.")
-    print(f"Sensor log saved to: {log_filename}")
     GPIO.cleanup()
     pygame.mixer.quit()
